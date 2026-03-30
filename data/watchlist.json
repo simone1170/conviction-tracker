@@ -1,0 +1,5 @@
+[
+  {"ticker": "NVDA", "threshold_usd": 100000, "notes": "GPU/AI monopoly", "active": true},
+  {"ticker": "AAPL", "threshold_usd": 200000, "notes": "Core holding", "active": true},
+  {"ticker": "GOOGL", "threshold_usd": 150000, "notes": "Search + Cloud", "active": true}
+]

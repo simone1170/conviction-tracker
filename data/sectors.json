@@ -1,0 +1,62 @@
+[
+  {
+    "sector": "Semiconductors",
+    "etf": "SMH",
+    "tickers": ["NVDA", "AMD", "INTC", "AVGO", "QCOM", "TXN", "MU", "AMAT", "LRCX", "KLAC"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Defense",
+    "etf": "ITA",
+    "tickers": ["LMT", "RTX", "NOC", "GD", "BA", "LHX", "HII", "TDG", "HEI", "AXON"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Energy",
+    "etf": "XLE",
+    "tickers": ["XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "PXD", "OXY"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Financials",
+    "etf": "XLF",
+    "tickers": ["JPM", "BAC", "WFC", "GS", "MS", "BLK", "C", "AXP", "USB", "PNC"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Biotech",
+    "etf": "XBI",
+    "tickers": ["MRNA", "REGN", "VRTX", "BIIB", "ILMN", "SGEN", "ALNY", "BMRN", "EXEL", "INCY"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Technology",
+    "etf": "XLK",
+    "tickers": ["MSFT", "AAPL", "NVDA", "AVGO", "ORCL", "CRM", "ACN", "CSCO", "IBM", "TXN"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Healthcare",
+    "etf": "XLV",
+    "tickers": ["UNH", "JNJ", "LLY", "ABT", "TMO", "MRK", "DHR", "MDT", "BMY", "ISRG"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Industrials",
+    "etf": "XLI",
+    "tickers": ["GE", "CAT", "HON", "UNP", "UPS", "DE", "ETN", "ITW", "WM", "CMI"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Consumer Staples",
+    "etf": "XLP",
+    "tickers": ["PG", "KO", "PEP", "COST", "WMT", "PM", "MO", "CL", "MDLZ", "GIS"],
+    "updated_at": "2026-03-30"
+  },
+  {
+    "sector": "Utilities",
+    "etf": "XLU",
+    "tickers": ["NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "PCG", "ED", "XEL"],
+    "updated_at": "2026-03-30"
+  }
+]

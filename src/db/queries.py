@@ -1,4 +1,16 @@
-"""All SQL queries used by the application. No queries should live outside this file."""
+"""All SQL queries and database helper functions.
+
+SQL constants are plain strings consumed by conn.execute().
+Python helpers wrap common multi-step operations and are the only place
+that should call conn.execute() with these constants.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 # ── Trades ────────────────────────────────────────────────────────────────────
 
@@ -191,3 +203,122 @@ ON CONFLICT(politician_name, sector_name) DO UPDATE SET
 SELECT_POLITICIAN_SECTORS = """
 SELECT sector_name FROM politician_history WHERE politician_name = :politician_name
 """
+
+_SELECT_LAST_HEALTH = """
+SELECT MAX(last_successful_run) AS last_run
+FROM system_health
+WHERE component = :component
+"""
+
+_SELECT_REPEAT_BUYER = """
+SELECT 1 FROM trades
+WHERE person_name = :person_name
+  AND ticker = :ticker
+  AND transaction_type = 'purchase'
+  AND is_planned_trade = FALSE
+  AND transaction_date >= :since_date
+LIMIT 1
+"""
+
+_COUNT_TICKER_PURCHASES = """
+SELECT COUNT(*) AS cnt FROM trades
+WHERE ticker = :ticker
+  AND transaction_type = 'purchase'
+  AND is_planned_trade = FALSE
+  AND transaction_date >= :since_date
+"""
+
+
+# ── Python helpers ────────────────────────────────────────────────────────────
+
+def insert_trades(conn: sqlite3.Connection, trades: list[dict]) -> int:
+    """Upsert a list of trade dicts into the trades table.
+
+    Uses ON CONFLICT REPLACE so re-ingesting the same trade is idempotent.
+
+    Args:
+        conn: Open database connection with PRAGMAs applied.
+        trades: List of trade dicts matching the trades table schema.
+
+    Returns:
+        Number of rows processed (not necessarily net new rows).
+    """
+    for trade in trades:
+        conn.execute(UPSERT_TRADE, trade)
+    conn.commit()
+    return len(trades)
+
+
+def get_last_scrape_date(conn: sqlite3.Connection, source: str) -> date | None:
+    """Return the date of the last successful scrape for a given source.
+
+    Args:
+        conn: Open database connection.
+        source: Source identifier, e.g. 'sec_form4'.
+
+    Returns:
+        The last successful run date, or None if the component has never run.
+    """
+    component = f"scraper_{source}"
+    row = conn.execute(_SELECT_LAST_HEALTH, {"component": component}).fetchone()
+    if row is None or row["last_run"] is None:
+        return None
+    try:
+        return date.fromisoformat(str(row["last_run"])[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def log_health(
+    conn: sqlite3.Connection,
+    component: str,
+    records_processed: int,
+    errors: int,
+    notes: str = "",
+) -> None:
+    """Insert a health record for a pipeline component.
+
+    Args:
+        conn: Open database connection.
+        component: Component name (e.g. 'scraper_sec_form4').
+        records_processed: Number of records handled in this run.
+        errors: Number of errors encountered.
+        notes: Optional free-text notes about the run.
+    """
+    conn.execute(
+        UPSERT_HEALTH,
+        {
+            "component": component,
+            "last_successful_run": datetime.utcnow().isoformat(),
+            "records_processed": records_processed,
+            "errors": errors,
+            "notes": notes,
+        },
+    )
+    conn.commit()
+
+
+def check_repeat_buyer(
+    conn: sqlite3.Connection,
+    person_name: str,
+    ticker: str,
+    since_date: str,
+) -> bool:
+    """Return True if this person has bought this ticker since since_date.
+
+    Used by the scoring engine to award the +5 repeat buyer bonus.
+
+    Args:
+        conn: Open database connection.
+        person_name: Insider's full name.
+        ticker: Company ticker symbol.
+        since_date: ISO date string (earliest transaction_date to consider).
+
+    Returns:
+        True if at least one qualifying purchase exists, False otherwise.
+    """
+    row = conn.execute(
+        _SELECT_REPEAT_BUYER,
+        {"person_name": person_name, "ticker": ticker, "since_date": since_date},
+    ).fetchone()
+    return row is not None

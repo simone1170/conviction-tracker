@@ -1,63 +1,139 @@
-"""Load environment variables and define project-wide constants."""
+"""Project-wide configuration loaded from .env.
+
+Usage:
+    from src.config import settings          # Pydantic Settings object
+    from src.config import DB_PATH, LOG_FILE # flat module-level aliases (legacy)
+
+The module-level aliases are kept so existing imports don't break.
+"""
+
+from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
-from dotenv import load_dotenv
-import os
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Resolve project root regardless of where the process is launched from
-PROJECT_ROOT = Path(__file__).parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+# Project root is two levels up from this file (src/config.py → src/ → project/)
+_PROJECT_ROOT = Path(__file__).parent.parent
 
-# ── Database ──────────────────────────────────────────────────────────────────
-DB_PATH = Path(os.getenv("DB_PATH", "data/conviction.db"))
-if not DB_PATH.is_absolute():
-    DB_PATH = PROJECT_ROOT / DB_PATH
 
-# ── SEC EDGAR ─────────────────────────────────────────────────────────────────
-SEC_USER_AGENT: str = os.environ["SEC_USER_AGENT"]
+class Settings(BaseSettings):
+    """Typed configuration for the Conviction Tracker.
 
-# ── Congressional API ─────────────────────────────────────────────────────────
-CONGRESS_API_PROVIDER: str = os.getenv("CONGRESS_API_PROVIDER", "quiverquant")
-CONGRESS_API_KEY: str = os.getenv("CONGRESS_API_KEY", "")
+    All values are read from the .env file at project root (or from the
+    environment).  Required fields raise a clear ValidationError on startup
+    if they are absent or empty.
+    """
 
-# ── ETF data ──────────────────────────────────────────────────────────────────
-ETF_API_PROVIDER: str = os.getenv("ETF_API_PROVIDER", "fmp")
-ETF_API_KEY: str = os.getenv("ETF_API_KEY", "")
+    model_config = SettingsConfigDict(
+        env_file=str(_PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    # ── SEC EDGAR ─────────────────────────────────────────────────────────────
+    sec_user_agent: str
 
-# ── Scheduling ────────────────────────────────────────────────────────────────
-CRON_SCHEDULE: str = os.getenv("CRON_SCHEDULE", "0 18 * * 1-5")
-HEARTBEAT_TIME: str = os.getenv("HEARTBEAT_TIME", "07:00")
+    # ── Congressional API (optional) ─────────────────────────────────────────
+    congress_api_provider: str = ""
+    congress_api_key: str = ""
 
-# ── Alert tuning ──────────────────────────────────────────────────────────────
-DAILY_ALERT_DIGEST_THRESHOLD: int = int(
-    os.getenv("DAILY_ALERT_DIGEST_THRESHOLD", "5")
-)
-DIGEST_SEND_TIME: str = os.getenv("DIGEST_SEND_TIME", "20:00")
+    # ── ETF data ─────────────────────────────────────────────────────────────
+    etf_api_provider: str = "fmp"
+    etf_api_key: str = ""
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-LOG_FILE: Path = PROJECT_ROOT / "data" / "logs" / "conviction.log"
+    # ── Telegram ─────────────────────────────────────────────────────────────
+    telegram_bot_token: str
+    telegram_chat_id: str
 
-# ── Data files ────────────────────────────────────────────────────────────────
-WATCHLIST_PATH: Path = PROJECT_ROOT / "data" / "watchlist.json"
-SECTORS_PATH: Path = PROJECT_ROOT / "data" / "sectors.json"
+    # ── Scheduling ───────────────────────────────────────────────────────────
+    cron_schedule: str = "0 18 * * 1-5"
+    heartbeat_time: str = "07:00"
 
-# ── Bullseye thresholds ───────────────────────────────────────────────────────
-MIDDLE_RING_CLUSTER_MIN: int = 3          # distinct companies to trigger cluster
-MIDDLE_RING_WINDOW_DAYS: int = 7          # rolling window for cluster detection
-OUTER_RING_CONGRESS_MIN_USD: int = 100_000  # lower bound for congressional anomaly
-OUTER_RING_SIZE_MULTIPLE: float = 5.0     # x rolling avg to trigger size anomaly
-ANTI_SIGNAL_MIN_SELLERS: int = 2          # distinct sellers for sell-cluster alert
+    # ── Alert tuning ─────────────────────────────────────────────────────────
+    daily_alert_digest_threshold: int = 5
+    digest_send_time: str = "20:00"
+    confirmation_lookback_days: int = 30
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    # ── Database ─────────────────────────────────────────────────────────────
+    db_path: str = "data/conviction.db"
+
+    # ── Derived / computed ────────────────────────────────────────────────────
+
+    @field_validator("sec_user_agent", "telegram_bot_token", "telegram_chat_id", mode="before")
+    @classmethod
+    def must_not_be_empty(cls, v: str, info) -> str:  # noqa: ANN001
+        """Raise a clear error for required fields that are blank."""
+        if not v or not v.strip():
+            raise ValueError(
+                f"{info.field_name} is required but was empty. "
+                "Check your .env file."
+            )
+        return v
+
+    @property
+    def congress_enabled(self) -> bool:
+        """True only when both CONGRESS_API_PROVIDER and CONGRESS_API_KEY are set."""
+        return bool(self.congress_api_provider and self.congress_api_key)
+
+    @property
+    def db_path_resolved(self) -> Path:
+        """Absolute Path to the SQLite database file."""
+        p = Path(self.db_path)
+        return p if p.is_absolute() else _PROJECT_ROOT / p
+
+    @property
+    def log_file(self) -> Path:
+        """Absolute Path to the rotating log file."""
+        return _PROJECT_ROOT / "data" / "logs" / "conviction.log"
+
+    @property
+    def watchlist_path(self) -> Path:
+        """Absolute Path to watchlist.json."""
+        return _PROJECT_ROOT / "data" / "watchlist.json"
+
+    @property
+    def sectors_path(self) -> Path:
+        """Absolute Path to sectors.json."""
+        return _PROJECT_ROOT / "data" / "sectors.json"
+
+    @property
+    def project_root(self) -> Path:
+        """Absolute Path to the project root directory."""
+        return _PROJECT_ROOT
+
+
+# ── Singleton ─────────────────────────────────────────────────────────────────
+
+settings = Settings()
+
+# ── Module-level aliases (for backward-compatible imports) ────────────────────
+
+DB_PATH: Path = settings.db_path_resolved
+LOG_FILE: Path = settings.log_file
+LOG_LEVEL: str = settings.log_level
+WATCHLIST_PATH: Path = settings.watchlist_path
+SECTORS_PATH: Path = settings.sectors_path
+
+# ── Bullseye thresholds (constants, not env-controlled) ───────────────────────
+
+MIDDLE_RING_CLUSTER_MIN: int = 3
+MIDDLE_RING_WINDOW_DAYS: int = 7
+OUTER_RING_CONGRESS_MIN_USD: int = 100_000
+OUTER_RING_SIZE_MULTIPLE: float = 5.0
+ANTI_SIGNAL_MIN_SELLERS: int = 2
 ANTI_SIGNAL_WINDOW_DAYS: int = 14
-ANTI_SIGNAL_SINGLE_SELL_USD: int = 500_000  # single large sell on watchlist ticker
-SECTOR_STALENESS_DAYS: int = 45           # warn if ETF mapping older than this
+ANTI_SIGNAL_SINGLE_SELL_USD: int = 500_000
+SECTOR_STALENESS_DAYS: int = 45
 
 # ── Transaction code constants ────────────────────────────────────────────────
+
 TX_BUY = "P"
 TX_SELL = "S"
 TX_DISCARD = frozenset({"A", "M", "F", "G"})

@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS trades (
     report_lag_days     INTEGER,
     filing_url          TEXT,
     is_planned_trade    BOOLEAN DEFAULT FALSE,
-    ring                TEXT    CHECK(ring IN ('inner', 'middle', 'outer')),
+    ring                TEXT    CHECK(ring IN ('inner', 'middle', 'outer', 'confirmation')),
+    confirmation_of     INTEGER REFERENCES trades(id),
     confidence_score    INTEGER,
     alert_sent          BOOLEAN DEFAULT FALSE,
     created_at          TEXT    DEFAULT CURRENT_TIMESTAMP,
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS alerts_log (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_id            INTEGER REFERENCES trades(id),
     ring                TEXT    NOT NULL,
-    alert_type          TEXT    NOT NULL CHECK(alert_type IN ('single', 'cluster', 'anomaly', 'anti_signal', 'digest')),
+    alert_type          TEXT    NOT NULL CHECK(alert_type IN ('single', 'cluster', 'anomaly', 'confirmation', 'anti_signal', 'digest')),
     message             TEXT    NOT NULL,
     confidence_score    INTEGER,
     sent_at             TEXT,
@@ -107,6 +108,12 @@ CREATE TABLE IF NOT EXISTS politician_history (
 );
 """
 
+_PRAGMAS = (
+    "PRAGMA journal_mode=WAL;"
+    "PRAGMA busy_timeout=5000;"
+    "PRAGMA foreign_keys=ON;"
+)
+
 
 # ── Connection factory ────────────────────────────────────────────────────────
 
@@ -122,11 +129,7 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.executescript(
-        "PRAGMA journal_mode=WAL;"
-        "PRAGMA busy_timeout=5000;"
-        "PRAGMA foreign_keys=ON;"
-    )
+    conn.executescript(_PRAGMAS)
     return conn
 
 
@@ -138,3 +141,19 @@ def create_tables(conn: sqlite3.Connection) -> None:
     """
     conn.executescript(_DDL)
     conn.commit()
+
+
+def init_db(db_path: Path) -> sqlite3.Connection:
+    """Create the database, apply PRAGMAs, and create all tables.
+
+    Convenience entry point used by scripts/setup_db.py and tests.
+
+    Args:
+        db_path: Absolute path to the SQLite database file.
+
+    Returns:
+        An open, fully initialised sqlite3.Connection.
+    """
+    conn = get_connection(db_path)
+    create_tables(conn)
+    return conn

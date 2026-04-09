@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import sqlite3
 
+from src.alerts.formatters import format_anti_signal_alert, format_large_sell_alert
+from src.alerts.telegram_bot import queue_for_digest, should_batch_alert
+from src.engine.anti_signal import detect_large_sells, detect_sell_clusters, is_new_sell_cluster
 from src.engine.inner_ring import check_inner_ring, load_watchlist
 from src.engine.middle_ring import detect_clusters, is_new_cluster
 from src.engine.scoring import compute_historical_avg, score_cluster, score_trade
@@ -158,3 +161,103 @@ def detect_and_score_clusters(
         new_clusters.append(cluster)
 
     return new_clusters
+
+
+def detect_and_alert_sells(
+    conn: sqlite3.Connection,
+    alerter,  # TelegramAlerter | None
+) -> tuple[int, int]:
+    """Detect sell clusters and large watchlist sells, then send/queue alerts.
+
+    Called from run_ingestion.py after buy-side processing.  Operates on the
+    full DB window so patterns that formed over multiple ingestion runs are
+    caught.
+
+    Args:
+        conn: Open database connection.
+        alerter: TelegramAlerter instance, or None if Telegram is not configured.
+
+    Returns:
+        Tuple of (cluster_count, large_sell_count) — number of NEW events
+        detected (not number of alerts sent, which may differ due to batching).
+    """
+    watchlist = load_watchlist(conn)
+
+    # ── Sell clusters ─────────────────────────────────────────────────────────
+    clusters = detect_sell_clusters(conn)
+    n_clusters = 0
+
+    for cluster in clusters:
+        ticker = cluster["ticker"]
+        if not is_new_sell_cluster(conn, ticker):
+            log.info("Sell cluster for '%s' already alerted — skipping", ticker)
+            continue
+
+        n_clusters += 1
+        message = format_anti_signal_alert(cluster)
+
+        if alerter and should_batch_alert(conn, "middle"):
+            queue_for_digest(conn, None, "middle", "anti_signal", message, 0)
+            log.info("Sell cluster alert queued for digest: %s", ticker)
+        elif alerter:
+            alerter.send_alert(
+                trade_id=None,
+                ring="middle",
+                alert_type="anti_signal",
+                message=message,
+                confidence_score=0,
+                conn=conn,
+            )
+        else:
+            # Telegram not configured — log to DB as pending so it's not lost
+            queue_for_digest(conn, None, "middle", "anti_signal", message, 0)
+            log.info("Sell cluster stored (Telegram not configured): %s", ticker)
+
+    # ── Large single sells on watchlist tickers ───────────────────────────────
+    large_sells = detect_large_sells(conn, watchlist)
+    n_large = 0
+
+    # Dedup: skip if we already alerted this specific trade
+    already_alerted_ids = {
+        row["trade_id"]
+        for row in conn.execute(
+            """
+            SELECT trade_id FROM alerts_log
+            WHERE alert_type = 'anti_signal'
+              AND trade_id IS NOT NULL
+              AND delivery_status IN ('sent', 'pending')
+            """
+        ).fetchall()
+        if row["trade_id"] is not None
+    }
+
+    for trade in large_sells:
+        trade_id = trade.get("id")
+        if trade_id in already_alerted_ids:
+            log.debug("Large sell trade %s already alerted — skipping", trade_id)
+            continue
+
+        n_large += 1
+        message = format_large_sell_alert(trade)
+
+        if alerter and should_batch_alert(conn, "middle"):
+            queue_for_digest(conn, trade_id, "middle", "anti_signal", message, 0)
+            log.info("Large sell alert queued for digest: %s $%.0f",
+                     trade.get("ticker"), trade.get("total_value", 0))
+        elif alerter:
+            alerter.send_alert(
+                trade_id=trade_id,
+                ring="middle",
+                alert_type="anti_signal",
+                message=message,
+                confidence_score=0,
+                conn=conn,
+            )
+        else:
+            queue_for_digest(conn, trade_id, "middle", "anti_signal", message, 0)
+
+    log.info(
+        "Anti-signal scan complete: %d new sell clusters, %d large watchlist sells",
+        n_clusters, n_large,
+    )
+    return n_clusters, n_large

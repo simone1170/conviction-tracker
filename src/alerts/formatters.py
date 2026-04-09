@@ -149,19 +149,113 @@ def format_outer_ring_alert(trade: dict) -> str:
     return f"⚡ <b>ANOMALY — {ticker}</b>\n[Phase 5 implementation pending]"
 
 
-def format_anti_signal_alert(trades: list[dict]) -> str:
-    """Format an anti-signal (sell cluster) alert per SPEC §7.2.
-
-    Stub — full implementation in Phase 6.
+def format_anti_signal_alert(cluster: dict) -> str:
+    """Format a sell-cluster anti-signal alert per SPEC §7.2.
 
     Args:
-        trades: List of sell trade dicts forming the cluster.
+        cluster: Sell-cluster dict from detect_sell_clusters().
 
     Returns:
         HTML-formatted Telegram message string.
     """
-    ticker = trades[0].get("ticker", "UNKNOWN") if trades else "UNKNOWN"
-    return f"🔴 <b>SELL CLUSTER — {ticker}</b>\n[Phase 6 implementation pending]"
+    ticker = cluster.get("ticker", "UNKNOWN")
+    seller_count = cluster.get("seller_count", 0)
+    aggregate_value = cluster.get("aggregate_value", 0.0)
+    window_start = cluster.get("window_start", "")
+    window_end = cluster.get("window_end", "")
+    trades = cluster.get("trades", [])
+
+    # Compute window days from dates when available
+    try:
+        from datetime import date as _date
+        d_start = _date.fromisoformat(str(window_start)[:10])
+        d_end = _date.fromisoformat(str(window_end)[:10])
+        window_days = max(1, (d_end - d_start).days + 1)
+    except (ValueError, TypeError):
+        window_days = 14
+
+    # One line per seller (highest-value trade per person)
+    best_by_person: dict[str, dict] = {}
+    for t in trades:
+        person = t.get("person_name", "Unknown")
+        tv = float(t.get("total_value") or 0)
+        if person not in best_by_person or tv > float(best_by_person[person].get("total_value") or 0):
+            best_by_person[person] = t
+
+    sorted_sellers = sorted(
+        best_by_person.values(),
+        key=lambda t: float(t.get("total_value") or 0),
+        reverse=True,
+    )
+
+    trade_lines: list[str] = []
+    for t in sorted_sellers:
+        person = t.get("person_name", "Unknown")
+        title = t.get("person_title")
+        value = float(t.get("total_value") or 0)
+        person_str = f"{person} ({title})" if title else person
+        trade_lines.append(f"• {person_str} — ${value:,.0f}")
+
+    trade_block = "\n".join(trade_lines)
+
+    return (
+        f"🔴 <b>SELL CLUSTER — {ticker}</b>\n"
+        f"{seller_count} insiders selling in {window_days}-day window:\n"
+        f"{trade_block}\n"
+        f"\n"
+        f"Aggregate: ${aggregate_value:,.0f}\n"
+        f"⚠️ Review your position."
+    )
+
+
+def format_large_sell_alert(trade: dict) -> str:
+    """Format a large single-insider sell alert for a watchlist ticker.
+
+    Args:
+        trade: Trade dict for the qualifying sell transaction.
+
+    Returns:
+        HTML-formatted Telegram message string.
+    """
+    ticker = trade.get("ticker", "UNKNOWN")
+    person_name = trade.get("person_name", "Unknown")
+    person_title = trade.get("person_title")
+    shares = trade.get("shares")
+    price = trade.get("price_per_share")
+    total_value = trade.get("total_value", 0)
+    transaction_date = trade.get("transaction_date", "Unknown")
+    filing_url = trade.get("filing_url")
+
+    if person_title:
+        person_line = f"{person_name} ({person_title})"
+    else:
+        person_line = person_name
+
+    if shares is not None and price is not None:
+        trade_line = f"Sold {shares:,.0f} shares @ ${price:.2f}"
+    elif shares is not None:
+        trade_line = f"Sold {shares:,.0f} shares"
+    else:
+        trade_line = "Sold (shares/price not reported)"
+
+    if filing_url:
+        filing_line = f'📄 <a href="{filing_url}">View SEC Filing</a>'
+    else:
+        filing_line = "📄 Filing URL not available"
+
+    return (
+        f"🔴 <b>LARGE INSIDER SELL — {ticker}</b>\n"
+        f"⚠️ Watchlist stock\n"
+        f"\n"
+        f"{person_line}\n"
+        f"{trade_line}\n"
+        f"Total: ${total_value:,.0f}\n"
+        f"\n"
+        f"📅 Traded: {transaction_date}\n"
+        f"{filing_line}\n"
+        f"\n"
+        f"⚠️ Review your position."
+    )
 
 
 def format_daily_digest(signals: dict) -> str:

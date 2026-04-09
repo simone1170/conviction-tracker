@@ -19,7 +19,7 @@ from src.alerts.telegram_bot import TelegramAlerter, queue_for_digest, should_ba
 from src.config import DB_PATH, SECTORS_PATH, settings
 from src.db.models import get_connection
 from src.db import queries
-from src.engine.bullseye import detect_and_score_clusters, process_trades
+from src.engine.bullseye import detect_and_alert_sells, detect_and_score_clusters, process_trades
 from src.scrapers.edgar_scraper import fetch_recent_form4s
 from src.scrapers.etf_mapper import is_sectors_seeded, seed_sectors_from_json
 from src.utils.logger import get_logger
@@ -144,6 +144,17 @@ def main() -> None:
             print(
                 f"Middle Ring: {n_middle_sent} sent immediately, {n_middle_queued} queued for digest"
             )
+
+    # ── Anti-signal sell detection ────────────────────────────────────────────
+    alerter_for_sells = (
+        TelegramAlerter(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.telegram_enabled else None
+    )
+    n_sell_clusters, n_large_sells = detect_and_alert_sells(conn, alerter_for_sells)
+    if n_sell_clusters or n_large_sells:
+        print(f"Anti-signal: {n_sell_clusters} sell cluster(s), {n_large_sells} large watchlist sell(s)")
+    else:
+        log.info("Anti-signal: no new sell events detected")
 
     conn.close()
 

@@ -138,7 +138,7 @@ class TelegramAlerter:
             )
             conn.commit()
             log.info(
-                "Alert sent: alert_log_id=%d trade_id=%d ring=%s",
+                "Alert sent: alert_log_id=%d trade_id=%s ring=%s",
                 alert_log_id,
                 trade_id,
                 ring,

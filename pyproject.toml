@@ -32,6 +32,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# test_pipeline.py is a standalone integration script, not a pytest test file
+addopts = "--ignore=tests/test_pipeline.py"
 
 [tool.setuptools.packages.find]
 where = ["."]

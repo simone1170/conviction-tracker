@@ -177,6 +177,40 @@ JOIN alerts_log al ON fa.alert_log_id = al.id
 WHERE fa.resolved = FALSE
 """
 
+SELECT_UNSENT_ALERTS = """
+SELECT * FROM trades
+WHERE alert_sent = FALSE
+  AND ring IS NOT NULL
+  AND confidence_score > 0
+  AND is_planned_trade = FALSE
+ORDER BY transaction_date DESC
+"""
+
+SELECT_UNSENT_ALERTS_BY_RING = """
+SELECT * FROM trades
+WHERE alert_sent = FALSE
+  AND ring = :ring
+  AND confidence_score > 0
+  AND is_planned_trade = FALSE
+ORDER BY transaction_date DESC
+"""
+
+COUNT_ALERTS_SENT_TODAY = """
+SELECT COUNT(*) AS cnt
+FROM alerts_log
+WHERE ring != 'inner'
+  AND delivery_status = 'sent'
+  AND DATE(sent_at) = DATE('now')
+"""
+
+SELECT_FAILED_ALERTS = """
+SELECT fa.*, al.message, al.ring, al.alert_type, al.trade_id
+FROM failed_alerts fa
+JOIN alerts_log al ON fa.alert_log_id = al.id
+WHERE fa.resolved = :resolved
+ORDER BY fa.created_at DESC
+"""
+
 # ── System health ─────────────────────────────────────────────────────────────
 
 UPSERT_HEALTH = """
@@ -322,3 +356,71 @@ def check_repeat_buyer(
         {"person_name": person_name, "ticker": ticker, "since_date": since_date},
     ).fetchone()
     return row is not None
+
+
+def get_unsent_alerts(
+    conn: sqlite3.Connection,
+    ring: str | None = None,
+) -> list[dict]:
+    """Return trades that need alerts sent.
+
+    Filters: alert_sent=FALSE, ring IS NOT NULL, confidence_score > 0,
+    is_planned_trade=FALSE.  Optionally filter to a specific ring.
+
+    Args:
+        conn: Open database connection.
+        ring: Optional ring name to filter by ('inner', 'middle', etc.).
+
+    Returns:
+        List of trade dicts.
+    """
+    if ring is not None:
+        rows = conn.execute(SELECT_UNSENT_ALERTS_BY_RING, {"ring": ring}).fetchall()
+    else:
+        rows = conn.execute(SELECT_UNSENT_ALERTS).fetchall()
+    return [dict(row) for row in rows]
+
+
+def mark_alert_sent(conn: sqlite3.Connection, trade_id: int) -> None:
+    """Set alert_sent=TRUE on a trade.
+
+    Args:
+        conn: Open database connection.
+        trade_id: Primary key of the trade to mark.
+    """
+    conn.execute(MARK_ALERT_SENT, {"id": trade_id})
+    conn.commit()
+
+
+def get_alerts_sent_today(conn: sqlite3.Connection) -> int:
+    """Count non-Inner Ring alerts delivered today.
+
+    Used for digest batching threshold checks (Phase 4).
+
+    Args:
+        conn: Open database connection.
+
+    Returns:
+        Number of non-Inner alerts sent today.
+    """
+    row = conn.execute(COUNT_ALERTS_SENT_TODAY).fetchone()
+    return row["cnt"] if row else 0
+
+
+def get_failed_alerts(
+    conn: sqlite3.Connection,
+    resolved: bool = False,
+) -> list[dict]:
+    """Return failed alert records.
+
+    Args:
+        conn: Open database connection.
+        resolved: If False (default), return only unresolved failures.
+
+    Returns:
+        List of failed_alerts dicts joined with alerts_log fields.
+    """
+    rows = conn.execute(
+        SELECT_FAILED_ALERTS, {"resolved": 1 if resolved else 0}
+    ).fetchall()
+    return [dict(row) for row in rows]

@@ -45,9 +45,9 @@ class Settings(BaseSettings):
     etf_api_provider: str = "fmp"
     etf_api_key: str = ""
 
-    # ── Telegram ─────────────────────────────────────────────────────────────
-    telegram_bot_token: str
-    telegram_chat_id: str
+    # ── Telegram (optional — leave blank to disable alerting) ────────────────
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     # ── Scheduling ───────────────────────────────────────────────────────────
     cron_schedule: str = "0 18 * * 1-5"
@@ -66,7 +66,7 @@ class Settings(BaseSettings):
 
     # ── Derived / computed ────────────────────────────────────────────────────
 
-    @field_validator("sec_user_agent", "telegram_bot_token", "telegram_chat_id", mode="before")
+    @field_validator("sec_user_agent", mode="before")
     @classmethod
     def must_not_be_empty(cls, v: str, info) -> str:  # noqa: ANN001
         """Raise a clear error for required fields that are blank."""
@@ -76,6 +76,11 @@ class Settings(BaseSettings):
                 "Check your .env file."
             )
         return v
+
+    @property
+    def telegram_enabled(self) -> bool:
+        """True only when both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set."""
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
 
     @property
     def congress_enabled(self) -> bool:

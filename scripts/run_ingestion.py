@@ -1,4 +1,4 @@
-"""Run one full SEC scrape → Bullseye filter → database write cycle.
+"""Run one full SEC scrape → Bullseye filter → database write → alert cycle.
 
 Usage:
     python scripts/run_ingestion.py
@@ -14,7 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import DB_PATH
+from src.alerts.formatters import format_inner_ring_alert
+from src.alerts.telegram_bot import TelegramAlerter
+from src.config import DB_PATH, settings
 from src.db.models import get_connection
 from src.db import queries
 from src.engine.bullseye import process_trades
@@ -28,7 +30,7 @@ _DEFAULT_LOOKBACK_DAYS = 3
 
 
 def main() -> None:
-    """Execute one scrape+filter+store cycle and print a summary."""
+    """Execute one scrape+filter+store+alert cycle and print a summary."""
     log.info("=== Ingestion cycle started ===")
 
     conn = get_connection(DB_PATH)
@@ -68,7 +70,38 @@ def main() -> None:
             records_processed=n_inserted,
             errors=errors,
         )
-        conn.close()
+
+    # ── Send Inner Ring alerts ────────────────────────────────────────────────
+    n_sent = 0
+    n_failed = 0
+
+    if not settings.telegram_enabled:
+        log.info("Telegram not configured — skipping alerts")
+    else:
+        alerter = TelegramAlerter(settings.telegram_bot_token, settings.telegram_chat_id)
+        unsent = queries.get_unsent_alerts(conn, ring="inner")
+        log.info("Found %d unsent Inner Ring alerts", len(unsent))
+
+        for trade in unsent:
+            trade_id = trade["id"]
+            message = format_inner_ring_alert(trade)
+            success = alerter.send_alert(
+                trade_id=trade_id,
+                ring="inner",
+                alert_type="single",
+                message=message,
+                confidence_score=trade.get("confidence_score", 0),
+                conn=conn,
+            )
+            if success:
+                queries.mark_alert_sent(conn, trade_id)
+                n_sent += 1
+            else:
+                n_failed += 1
+
+        print(f"Sent {n_sent} Inner Ring alerts, {n_failed} failed")
+
+    conn.close()
 
     inner_count = sum(1 for t in enriched if t.get("ring") == "inner")
     planned_count = sum(1 for t in enriched if t.get("is_planned_trade"))

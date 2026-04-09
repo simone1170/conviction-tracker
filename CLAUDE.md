@@ -5,7 +5,7 @@ A personal Python tool that monitors SEC Form 4 insider filings, filters them th
 
 ## Stack
 - Python 3.11+, SQLite (WAL mode), Streamlit, python-telegram-bot, Plotly
-- `edgartools` for SEC EDGAR data (free, no API key, respects SEC 10 req/s limit)
+- SEC EDGAR data via direct REST API calls (`requests` + `xml.etree.ElementTree`) — `edgartools` was dropped due to pandas 3.0 incompatibility
 - Congressional data via third-party API (optional, costs ~$30/month) — never scrape Congress portals directly
 - Scheduling via cron (Linux/Mac) or APScheduler
 

@@ -11,6 +11,8 @@ from datetime import datetime
 
 import requests
 
+from src.config import settings
+from src.db import queries
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -167,3 +169,68 @@ class TelegramAlerter:
             trade_id,
         )
         return False
+
+
+# ── Digest batching (SPEC §7.3) ───────────────────────────────────────────────
+
+
+def should_batch_alert(conn: sqlite3.Connection, ring: str) -> bool:
+    """Return True if this alert should be queued for the daily digest.
+
+    Inner Ring alerts are NEVER batched — they always return False.
+    All other rings check the count of non-Inner alerts sent today against
+    the DAILY_ALERT_DIGEST_THRESHOLD from config.
+
+    Args:
+        conn: Open database connection.
+        ring: Ring identifier ('inner', 'middle', 'outer', 'confirmation').
+
+    Returns:
+        True if the alert should be queued (not sent immediately).
+    """
+    if ring == "inner":
+        return False
+    count = queries.get_alerts_sent_today(conn)
+    threshold = settings.daily_alert_digest_threshold
+    should_batch = count >= threshold
+    if should_batch:
+        log.debug(
+            "Batching %s alert — %d non-inner alerts sent today (threshold=%d)",
+            ring,
+            count,
+            threshold,
+        )
+    return should_batch
+
+
+def queue_for_digest(
+    conn: sqlite3.Connection,
+    trade_id: int | None,
+    ring: str,
+    alert_type: str,
+    message: str,
+    confidence_score: int,
+) -> None:
+    """Queue an alert for the daily digest batch.
+
+    Inserts an alerts_log row with delivery_status='pending'. These rows are
+    collected and sent as a single digest message (full digest sending: Phase 8).
+
+    Args:
+        conn: Open database connection.
+        trade_id: Primary key of the associated trade, or None for cluster alerts.
+        ring: Ring identifier.
+        alert_type: Alert type string.
+        message: Formatted alert text.
+        confidence_score: Computed confidence score.
+    """
+    conn.execute(
+        """
+        INSERT INTO alerts_log
+            (trade_id, ring, alert_type, message, confidence_score, delivery_status)
+        VALUES (?, ?, ?, ?, ?, 'pending')
+        """,
+        (trade_id, ring, alert_type, message, confidence_score),
+    )
+    conn.commit()
+    log.info("Alert queued for digest: ring=%s alert_type=%s", ring, alert_type)

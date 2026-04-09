@@ -137,12 +137,14 @@ def score_trade(
     ring: str,
     conn: sqlite3.Connection,
     historical_avg: float | None = None,
+    cluster_company_count: int = 0,
 ) -> int:
     """Compute a 0-100 confidence score for a single trade.
 
     Applies base score, title bonus, ownership penalty, purchase-size bonus,
-    repeat-buyer bonus, planned-trade and low-value penalties, then clamps
-    to [0, 100].  Congressional Outer Ring signals are further capped at 50.
+    repeat-buyer bonus, cluster strength bonus (Middle Ring only), planned-trade
+    and low-value penalties, then clamps to [0, 100].  Congressional Outer Ring
+    signals are further capped at 50.
 
     Args:
         trade: Trade dict with at least: is_planned_trade, person_title,
@@ -152,6 +154,8 @@ def score_trade(
         conn: Open database connection (needed for repeat-buyer lookup).
         historical_avg: 90-day rolling average purchase value for this ticker,
             or None if insufficient history.
+        cluster_company_count: Number of distinct companies in the cluster
+            (Middle Ring only).  0 means no cluster strength bonus.
 
     Returns:
         Integer confidence score in [0, 100].
@@ -204,6 +208,12 @@ def score_trade(
         ):
             score += 5
 
+    # ── Cluster strength bonus (Middle Ring only, SPEC §6.2) ─────────────────
+    if ring == "middle" and cluster_company_count >= 5:
+        score += 20
+    elif ring == "middle" and cluster_company_count >= 4:
+        score += 10
+
     # ── Low-value penalty ─────────────────────────────────────────────────────
     try:
         if float(trade.get("total_value", 0)) < 10_000:
@@ -216,3 +226,38 @@ def score_trade(
         score = min(score, _CONGRESS_OUTER_CAP)
 
     return max(0, min(100, score))
+
+
+def score_cluster(cluster: dict, conn: sqlite3.Connection) -> int:
+    """Compute the confidence score for a Middle Ring cluster.
+
+    Re-scores each constituent trade with ring='middle' and the cluster's
+    company_count (which applies the cluster-strength bonus), then returns
+    the rounded average.  The cluster must contain at least one trade.
+
+    Args:
+        cluster: Cluster dict from detect_clusters(), with 'trades', 'company_count'.
+        conn: Open database connection (needed for historical avg + repeat-buyer).
+
+    Returns:
+        Integer average confidence score in [0, 100].
+    """
+    trades = cluster.get("trades", [])
+    if not trades:
+        return _BASE_SCORES["middle"]
+
+    company_count = cluster.get("company_count", 0)
+    scored: list[int] = []
+    for trade in trades:
+        historical_avg = compute_historical_avg(conn, trade.get("ticker", ""))
+        individual = score_trade(
+            trade,
+            ring="middle",
+            conn=conn,
+            historical_avg=historical_avg,
+            cluster_company_count=company_count,
+        )
+        scored.append(individual)
+
+    avg = sum(scored) / len(scored)
+    return max(0, min(100, round(avg)))

@@ -72,16 +72,66 @@ def format_inner_ring_alert(trade: dict) -> str:
 def format_middle_ring_alert(cluster: dict) -> str:
     """Format a Middle Ring cluster alert message per SPEC §7.2.
 
-    Stub — full implementation in Phase 4.
+    Shows the highest-value trade per company (up to 5 companies).
+    If more than 5 companies are in the cluster, adds an "...and N more" line.
 
     Args:
-        cluster: Cluster dict with sector name and constituent trades.
+        cluster: Cluster dict from detect_clusters() with confidence_score added.
 
     Returns:
         HTML-formatted Telegram message string.
     """
     sector_name = cluster.get("sector_name", "Unknown Sector")
-    return f"🔵 <b>SECTOR CLUSTER — {sector_name}</b>\n[Phase 4 implementation pending]"
+    score = cluster.get("confidence_score", 0)
+    company_count = cluster.get("company_count", 0)
+    aggregate_value = cluster.get("aggregate_value", 0.0)
+    window_start = cluster.get("window_start", "")
+    window_end = cluster.get("window_end", "")
+    trades = cluster.get("trades", [])
+
+    # Pick the highest-value trade per company
+    best_by_ticker: dict[str, dict] = {}
+    for trade in trades:
+        ticker = trade.get("ticker", "")
+        tv = float(trade.get("total_value") or 0)
+        if ticker not in best_by_ticker or tv > float(best_by_ticker[ticker].get("total_value") or 0):
+            best_by_ticker[ticker] = trade
+
+    # Sort by total_value descending so the most impactful companies appear first
+    sorted_companies = sorted(
+        best_by_ticker.values(),
+        key=lambda t: float(t.get("total_value") or 0),
+        reverse=True,
+    )
+
+    _MAX_LINES = 5
+    display_companies = sorted_companies[:_MAX_LINES]
+    overflow = len(sorted_companies) - _MAX_LINES
+
+    trade_lines: list[str] = []
+    for t in display_companies:
+        ticker = t.get("ticker", "?")
+        person = t.get("person_name", "Unknown")
+        title = t.get("person_title")
+        value = float(t.get("total_value") or 0)
+        person_str = f"{person} ({title})" if title else person
+        trade_lines.append(f"• {ticker}: {person_str} — ${value:,.0f}")
+
+    if overflow > 0:
+        trade_lines.append(f"...and {overflow} more")
+
+    trade_block = "\n".join(trade_lines)
+
+    return (
+        f"🔵 <b>SECTOR CLUSTER — {sector_name}</b>\n"
+        f"Confidence: {score}/100\n"
+        f"\n"
+        f"{company_count} insider buys across {company_count} companies (7-day window):\n"
+        f"{trade_block}\n"
+        f"\n"
+        f"Aggregate: ${aggregate_value:,.0f}\n"
+        f"Window: {window_start} → {window_end}"
+    )
 
 
 def format_outer_ring_alert(trade: dict) -> str:

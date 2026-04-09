@@ -317,7 +317,6 @@ def _efts_search(
 
     while True:
         params = {
-            "q": '""',
             "forms": "4",
             "dateRange": "custom",
             "startdt": since_date,
@@ -328,8 +327,11 @@ def _efts_search(
             resp = session.get(_EFTS_URL, params=params, timeout=15)
             resp.raise_for_status()
         except requests.RequestException as exc:
-            log.error("EFTS search failed (offset=%d): %s", offset, exc)
-            raise
+            log.warning(
+                "EFTS search failed at offset=%d: %s — returning %d results collected so far",
+                offset, exc, len(results),
+            )
+            return results
 
         data = resp.json()
         hits = data.get("hits", {}).get("hits", [])

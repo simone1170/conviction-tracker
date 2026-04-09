@@ -14,13 +14,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.alerts.formatters import format_inner_ring_alert
-from src.alerts.telegram_bot import TelegramAlerter
-from src.config import DB_PATH, settings
+from src.alerts.formatters import format_inner_ring_alert, format_middle_ring_alert
+from src.alerts.telegram_bot import TelegramAlerter, queue_for_digest, should_batch_alert
+from src.config import DB_PATH, SECTORS_PATH, settings
 from src.db.models import get_connection
 from src.db import queries
-from src.engine.bullseye import process_trades
+from src.engine.bullseye import detect_and_score_clusters, process_trades
 from src.scrapers.edgar_scraper import fetch_recent_form4s
+from src.scrapers.etf_mapper import is_sectors_seeded, seed_sectors_from_json
 from src.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -37,6 +38,11 @@ def main() -> None:
     errors = 0
     n_inserted = 0
     enriched: list[dict] = []
+
+    # ── Seed sectors on first run ─────────────────────────────────────────────
+    if not is_sectors_seeded(conn):
+        log.info("Sectors table empty — seeding from %s", SECTORS_PATH)
+        seed_sectors_from_json(conn, SECTORS_PATH)
 
     try:
         # ── Determine fetch window ────────────────────────────────────────────
@@ -71,18 +77,30 @@ def main() -> None:
             errors=errors,
         )
 
-    # ── Send Inner Ring alerts ────────────────────────────────────────────────
-    n_sent = 0
-    n_failed = 0
+    # ── Middle Ring cluster detection ─────────────────────────────────────────
+    new_clusters = detect_and_score_clusters(conn)
+
+    if new_clusters:
+        sector_names = [c["sector_name"] for c in new_clusters]
+        print(f"Detected {len(new_clusters)} sector cluster(s): {', '.join(sector_names)}")
+    else:
+        log.info("No new Middle Ring clusters detected")
+
+    # ── Send alerts ───────────────────────────────────────────────────────────
+    n_inner_sent = 0
+    n_inner_failed = 0
+    n_middle_sent = 0
+    n_middle_queued = 0
 
     if not settings.telegram_enabled:
         log.info("Telegram not configured — skipping alerts")
     else:
         alerter = TelegramAlerter(settings.telegram_bot_token, settings.telegram_chat_id)
-        unsent = queries.get_unsent_alerts(conn, ring="inner")
-        log.info("Found %d unsent Inner Ring alerts", len(unsent))
 
-        for trade in unsent:
+        # Inner Ring alerts (always immediate, never batched)
+        unsent_inner = queries.get_unsent_alerts(conn, ring="inner")
+        log.info("Found %d unsent Inner Ring alerts", len(unsent_inner))
+        for trade in unsent_inner:
             trade_id = trade["id"]
             message = format_inner_ring_alert(trade)
             success = alerter.send_alert(
@@ -95,17 +113,42 @@ def main() -> None:
             )
             if success:
                 queries.mark_alert_sent(conn, trade_id)
-                n_sent += 1
+                n_inner_sent += 1
             else:
-                n_failed += 1
+                n_inner_failed += 1
 
-        print(f"Sent {n_sent} Inner Ring alerts, {n_failed} failed")
+        # Middle Ring cluster alerts (subject to digest batching)
+        for cluster in new_clusters:
+            message = format_middle_ring_alert(cluster)
+            confidence_score = cluster.get("confidence_score", 0)
+
+            if should_batch_alert(conn, "middle"):
+                queue_for_digest(conn, None, "middle", "cluster", message, confidence_score)
+                n_middle_queued += 1
+                log.info("Cluster alert queued for digest: %s", cluster["sector_name"])
+            else:
+                success = alerter.send_alert(
+                    trade_id=None,
+                    ring="middle",
+                    alert_type="cluster",
+                    message=message,
+                    confidence_score=confidence_score,
+                    conn=conn,
+                )
+                if success:
+                    n_middle_sent += 1
+
+        if n_inner_sent or n_inner_failed:
+            print(f"Sent {n_inner_sent} Inner Ring alerts, {n_inner_failed} failed")
+        if n_middle_sent or n_middle_queued:
+            print(
+                f"Middle Ring: {n_middle_sent} sent immediately, {n_middle_queued} queued for digest"
+            )
 
     conn.close()
 
     inner_count = sum(1 for t in enriched if t.get("ring") == "inner")
     planned_count = sum(1 for t in enriched if t.get("is_planned_trade"))
-
     print(
         f"Ingested {n_inserted} trades "
         f"({inner_count} Inner Ring signals, {planned_count} planned/excluded)"
